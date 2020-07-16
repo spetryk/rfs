@@ -28,6 +28,10 @@ from eval.cls_eval import validate
 
 import wandb
 
+# lsl
+from lsl.birds.data import lang_utils
+from lsl.birds.models.language import TextProposal
+
 
 def parse_option():
 
@@ -79,6 +83,36 @@ def parse_option():
                         help='Size of test batch)')
 
     parser.add_argument('-t', '--trial', type=str, default='1', help='the experiment id')
+
+    # *** LSL params
+    parser.add_argument("--lsl", action="store_true",
+                        help='Perform LSL during training on embedding. Only CUB dataset supported for now')
+    parser.add_argument("--rnn_type", choices=["gru", "lstm"], default="gru",
+                        help='Gated Recurrent Unit, or RNN for language embedding')
+    parser.add_argument("--rnn_dropout", default=0.0, type=float)
+    parser.add_argument("--rnn_num_layers", default=1, type=int)
+    parser.add_argument(
+        "--language_filter", default="all", choices=["all", "color", "nocolor"]
+    )
+    parser.add_argument(
+        "--lang_supervision", default="instance", choices=["instance", "class"]
+    )
+    parser.add_argument("--glove_init", action="store_true")
+    parser.add_argument("--freeze_emb", action="store_true")
+    parser.add_argument("--scramble_lang", action="store_true")
+    parser.add_argument("--sample_class_lang", action="store_true")
+    parser.add_argument("--scramble_all", action="store_true")
+    parser.add_argument("--shuffle_lang", action="store_true")
+    parser.add_argument("--scramble_lang_class", action="store_true")
+    parser.add_argument("--n_caption", choices=list(range(1, 11)), type=int, default=1)
+    parser.add_argument("--max_class", type=int, default=None)
+    parser.add_argument("--max_img_per_class", type=int, default=None)
+    parser.add_argument("--max_lang_per_class", type=int, default=None)
+    parser.add_argument("--lang_lambda", type=float, default=5)
+    parser.add_argument("--lang_emb_size", type=int, default=300)
+    parser.add_argument("--lang_hidden_size", type=int, default=200)
+    parser.add_argument("--rnn_lr_scale", default=1.0, type=float)
+    parser.add_argument("--lang_dir", default='./lsl/birds/reed-birds', type=str)
 
     # wandb logging
     parser.add_argument('--dryrun',      action='store_true',
@@ -250,6 +284,7 @@ def main():
         raise NotImplementedError(opt.dataset)
 
     print('Amount training data: {}'.format(len(train_loader.dataset)))
+    print('Amount val data:      {}'.format(len(val_loader.dataset)))
 
     # model
     model = create_model(opt.model, n_cls, opt.dataset)
@@ -267,12 +302,45 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
 
+
+    # lsl
+    # load language
+    vocab = lang_utils.load_vocab(opt.lang_dir)
+
+    lang_model = None
+    if opt.lsl:
+        if opt.glove_init:
+            vecs = lang_utils.glove_init(vocab, emb_size=opt.lang_emb_size)
+        embedding_model = nn.Embedding(
+            len(vocab), opt.lang_emb_size, _weight=vecs if opt.glove_init else None
+        )
+        if opt.freeze_emb:
+            embedding_model.weight.requires_grad = False
+
+        lang_input_size = 1600 # may need to change this
+        lang_model = TextProposal(
+            embedding_model,
+            input_size=lang_input_size,
+            hidden_size=opt.lang_hidden_size,
+            project_input=lang_input_size != opt.lang_hidden_size,
+            rnn=opt.rnn_type,
+            num_layers=opt.rnn_num_layers,
+            dropout=opt.rnn_dropout,
+            vocab=vocab,
+            **lang_utils.get_special_indices(vocab)
+        )
+
+
+
     if torch.cuda.is_available():
         if opt.n_gpu > 1:
             model = nn.DataParallel(model)
         model = model.cuda()
         criterion = criterion.cuda()
         cudnn.benchmark = True
+        if opt.lsl:
+            embedding_model = embedding_model.cuda()
+            lang_model = lang_model.cuda()
 
     # tensorboard
     #logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
@@ -361,6 +429,11 @@ def train(epoch, train_loader, model, criterion, optimizer, opt):
         # ===================forward=====================
         output = model(input)
         loss = criterion(output, target)
+
+        # add language loss
+        if opt.lsl:
+            # TODO
+            pass
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), input.size(0))
