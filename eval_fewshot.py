@@ -3,6 +3,7 @@ from __future__ import print_function
 import argparse
 import socket
 import time
+import os
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -14,6 +15,7 @@ from models.util import create_model
 from dataset.mini_imagenet import MetaImageNet
 from dataset.tiered_imagenet import MetaTieredImageNet
 from dataset.cifar import MetaCIFAR100
+from dataset.cub import MetaCUB2011
 from dataset.transform_cfg import transforms_test_options, transforms_list
 
 from eval.meta_eval import meta_test
@@ -29,7 +31,7 @@ def parse_option():
 
     # dataset
     parser.add_argument('--dataset', type=str, default='miniImageNet', choices=['miniImageNet', 'tieredImageNet',
-                                                                                'CIFAR-FS', 'FC100'])
+                                                                                'CIFAR-FS', 'FC100', 'CUB'])
     parser.add_argument('--transform', type=str, default='A', choices=transforms_list)
 
     # specify data_root
@@ -43,9 +45,9 @@ def parse_option():
     parser.add_argument('--n_shots', type=int, default=1, metavar='N',
                         help='Number of shots in test')
     parser.add_argument('--n_queries', type=int, default=15, metavar='N',
-                        help='Number of query in test')
+                        help='Number of query in test') # never used?
     parser.add_argument('--n_aug_support_samples', default=5, type=int,
-                        help='The number of augmented samples for each meta test sample')
+                        help='The number of augmented samples for each meta test sample') # never used?
     parser.add_argument('--num_workers', type=int, default=3, metavar='N',
                         help='Number of workers for dataloader')
     parser.add_argument('--test_batch_size', type=int, default=1, metavar='test_batch_size',
@@ -58,11 +60,15 @@ def parse_option():
     else:
         opt.use_trainval = False
 
+    if opt.dataset == 'CUB':
+        opt.dataset = 'CUB_200_2011'
+
+
     # set the path according to the environment
     if not opt.data_root:
         opt.data_root = './data/{}'.format(opt.dataset)
     else:
-        opt.data_root = '{}/{}'.format(opt.data_root, opt.dataset)
+        opt.data_root = os.path.join(opt.data_root, opt.dataset)
     opt.data_aug = True
 
     return opt
@@ -134,8 +140,31 @@ def main():
                 n_cls = 60
             else:
                 raise NotImplementedError('dataset not supported: {}'.format(opt.dataset))
+    elif opt.dataset == 'CUB_200_2011':
+        train_trans, test_trans = transforms_test_options['C']
+        meta_testloader = DataLoader(MetaCUB2011(args=opt, partition='test',
+                                                        train_transform=train_trans,
+                                                        test_transform=test_trans,
+                                                        fix_seed=False),
+                                     batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
+                                     num_workers=opt.num_workers)
+        meta_valloader = DataLoader(MetaCUB2011(args=opt, partition='val',
+                                                       train_transform=train_trans,
+                                                       test_transform=test_trans,
+                                                       fix_seed=False),
+                                    batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
+                                    num_workers=opt.num_workers)
+        if opt.use_trainval:
+            n_cls = 150
+        else:
+            n_cls = 100
+
+
     else:
         raise NotImplementedError(opt.dataset)
+
+    print('Amount val data:  {}'.format(len(meta_valloader.dataset)))
+    print('Amount test data: {}'.format(len(meta_testloader.dataset)))
 
     # load model
     model = create_model(opt.model, n_cls, opt.dataset)

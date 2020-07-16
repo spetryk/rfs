@@ -1,23 +1,31 @@
-import os
-import pickle
-from PIL import Image
-import numpy as np
 import torch
 from torch.utils.data import Dataset
-import torchvision.transforms as transforms
+from torchvision import transforms
+import torchvision.transforms.functional as F
+import numpy as np
+import pandas as pd
+
+from collections import defaultdict
+from itertools import chain
+import os
+from PIL import Image
+import json
+from tqdm import tqdm
 
 
-class ImageNet(Dataset):
+
+class CUB2011(Dataset):
     def __init__(self, args, partition='train', pretrain=True, is_sample=False, k=4096,
                  transform=None):
         super(Dataset, self).__init__()
         self.data_root = args.data_root
         self.partition = partition
         self.data_aug = args.data_aug
-        self.mean = [120.39586422 / 255.0, 115.59361427 / 255.0, 104.54012653 / 255.0]
-        self.std = [70.68188272 / 255.0, 68.27635443 / 255.0, 72.54505529 / 255.0]
+        self.mean = [0.4856074, 0.4994159, 0.4323767]
+        self.std  = [0.1817421, 0.1811020, 0.1927458]
         self.normalize = transforms.Normalize(mean=self.mean, std=self.std)
         self.pretrain = pretrain
+
 
         if transform is None:
             if self.partition == 'train' and self.data_aug:
@@ -39,16 +47,23 @@ class ImageNet(Dataset):
         else:
             self.transform = transform
 
-        if self.pretrain:
-            self.file_pattern = 'miniImageNet_category_split_train_phase_{}.pickle'.format(partition)
-        else:
-            self.file_pattern = 'miniImageNet_category_split_{}.pickle'.format(partition)
+        with open(os.path.join(self.data_root, 'fsl_splits', partition + '.json'), 'rb') as f:
+            self.data = json.load(f)
 
-        self.data = {}
-        with open(os.path.join(self.data_root, self.file_pattern), 'rb') as f:
-            data = pickle.load(f, encoding='latin1')
-            self.imgs = data['data']
-            self.labels = data['labels']
+        self.imgs = np.load(os.path.join(self.data_root, 'fsl_splits', partition + '.npy'))
+
+        labels = self.data['image_labels']
+        # adjust sparse labels to labels from 0 to n.
+        cur_class = 0
+        label2label = {}
+        for idx, label in enumerate(labels):
+            if label not in label2label:
+                label2label[label] = cur_class
+                cur_class += 1
+        new_labels = []
+        for idx, label in enumerate(labels):
+            new_labels.append(label2label[label])
+        self.labels = new_labels
 
         # pre-process for contrastive sampling
         self.k = k
@@ -74,6 +89,7 @@ class ImageNet(Dataset):
             self.cls_positive = np.asarray(self.cls_positive)
             self.cls_negative = np.asarray(self.cls_negative)
 
+
     def __getitem__(self, item):
         img = np.asarray(self.imgs[item]).astype('uint8')
         img = self.transform(img)
@@ -87,15 +103,18 @@ class ImageNet(Dataset):
             neg_idx = np.random.choice(self.cls_negative[target], self.k, replace=replace)
             sample_idx = np.hstack((np.asarray([pos_idx]), neg_idx))
             return img, target, item, sample_idx
-        
+
+
     def __len__(self):
         return len(self.labels)
 
 
-class MetaImageNet(ImageNet):
-    
+
+
+
+class MetaCUB2011(CUB2011):
     def __init__(self, args, partition='train', train_transform=None, test_transform=None, fix_seed=True):
-        super(MetaImageNet, self).__init__(args, partition, False)
+        super(MetaCUB2011, self).__init__(args, partition, False)
         self.fix_seed = fix_seed
         self.n_ways = args.n_ways
         self.n_shots = args.n_shots
@@ -126,7 +145,7 @@ class MetaImageNet(ImageNet):
             self.test_transform = test_transform
 
         self.data = {}
-        for idx in range(self.imgs.shape[0]):
+        for idx in range(len(self.imgs)):
             if self.labels[idx] not in self.data:
                 self.data[self.labels[idx]] = []
             self.data[self.labels[idx]].append(self.imgs[idx])
@@ -154,7 +173,7 @@ class MetaImageNet(ImageNet):
         num_ways, n_queries_per_way, height, width, channel = query_xs.shape
         query_xs = query_xs.reshape((num_ways * n_queries_per_way, height, width, channel))
         query_ys = query_ys.reshape((num_ways * n_queries_per_way, ))
-                
+
         support_xs = support_xs.reshape((-1, height, width, channel))
         if self.n_aug_support_samples > 1:
             support_xs = np.tile(support_xs, (self.n_aug_support_samples, 1, 1, 1))
@@ -162,32 +181,38 @@ class MetaImageNet(ImageNet):
         support_xs = np.split(support_xs, support_xs.shape[0], axis=0)
         query_xs = query_xs.reshape((-1, height, width, channel))
         query_xs = np.split(query_xs, query_xs.shape[0], axis=0)
-        
+
         support_xs = torch.stack(list(map(lambda x: self.train_transform(x.squeeze()), support_xs)))
         query_xs = torch.stack(list(map(lambda x: self.test_transform(x.squeeze()), query_xs)))
-      
-        return support_xs, support_ys, query_xs, query_ys      
-        
+
+        return support_xs, support_ys, query_xs, query_ys
+
     def __len__(self):
         return self.n_test_runs
-    
-    
+
+
+
 if __name__ == '__main__':
     args = lambda x: None
     args.n_ways = 5
     args.n_shots = 1
     args.n_queries = 12
-    args.data_root = '/shared/spetryk/data/rfs/miniImageNet'
+    args.data_root = '/shared/spetryk/data/rfs/CUB_200_2011'
     args.data_aug = True
     args.n_test_runs = 5
     args.n_aug_support_samples = 1
-    imagenet = ImageNet(args, 'val')
-    print(len(imagenet))
-    print(imagenet.__getitem__(500)[0].shape)
-    
-    metaimagenet = MetaImageNet(args)
-    print(len(metaimagenet))
-    print(metaimagenet.__getitem__(500)[0].size())
-    print(metaimagenet.__getitem__(500)[1].shape)
-    print(metaimagenet.__getitem__(500)[2].size())
-    print(metaimagenet.__getitem__(500)[3].shape)
+    cub_dataset = CUB2011(args, 'val')
+    print(len(cub_dataset))
+    print(cub_dataset.__getitem__(500)[0].shape)
+
+    metacub = MetaCUB2011(args)
+    print(len(metacub))
+    print(metacub.__getitem__(500)[0].size())
+    print(metacub.__getitem__(500)[0].dtype)
+    print(metacub.__getitem__(500)[1].shape)
+    print(metacub.__getitem__(500)[2].size())
+    print(metacub.__getitem__(500)[2].dtype)
+    print(metacub.__getitem__(500)[3].shape)
+
+
+

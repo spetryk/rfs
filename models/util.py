@@ -6,7 +6,7 @@ from . import model_dict
 
 def create_model(name, n_cls, dataset='miniImageNet'):
     """create model by name"""
-    if dataset == 'miniImageNet' or dataset == 'tieredImageNet':
+    if dataset == 'miniImageNet' or dataset == 'tieredImageNet' or dataset == 'CUB_200_2011':
         if name.endswith('v2') or name.endswith('v3'):
             model = model_dict[name](num_classes=n_cls)
         elif name.startswith('resnet50'):

@@ -45,6 +45,48 @@ transform_A_test = [
     ])
 ]
 
+
+# CUB transform
+mean = [0.4856074, 0.4994159, 0.4323767]
+std  =  [0.1817421, 0.1811020, 0.1927458]
+normalize_cub = transforms.Normalize(mean=mean, std=std)
+
+transform_C = [
+    transforms.Compose([
+        lambda x: Image.fromarray(x),
+        transforms.RandomCrop(84, padding=8),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
+        transforms.RandomHorizontalFlip(),
+        lambda x: np.asarray(x),
+        transforms.ToTensor(),
+        normalize_cub
+    ]),
+
+    transforms.Compose([
+        lambda x: Image.fromarray(x),
+        transforms.ToTensor(),
+        normalize_cub
+    ])
+]
+
+transform_C_test = [
+    transforms.Compose([
+        lambda x: Image.fromarray(x),
+        transforms.RandomCrop(84, padding=8),
+        transforms.RandomHorizontalFlip(),
+        lambda x: np.asarray(x),
+        transforms.ToTensor(),
+        normalize_cub
+    ]),
+
+    transforms.Compose([
+        lambda x: Image.fromarray(x),
+        transforms.ToTensor(),
+        normalize_cub
+    ])
+]
+
+
 # CIFAR style transformation
 mean = [0.5071, 0.4867, 0.4408]
 std = [0.2675, 0.2565, 0.2761]
@@ -85,15 +127,17 @@ transform_D_test = [
 ]
 
 
-transforms_list = ['A', 'D']
+transforms_list = ['A', 'C', 'D']
 
 
 transforms_options = {
     'A': transform_A,
+    'C': transform_C,
     'D': transform_D,
 }
 
 transforms_test_options = {
     'A': transform_A_test,
+    'C': transform_C_test,
     'D': transform_D_test,
 }

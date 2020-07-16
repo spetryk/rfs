@@ -19,11 +19,14 @@ from models.util import create_model
 from dataset.mini_imagenet import ImageNet, MetaImageNet
 from dataset.tiered_imagenet import TieredImageNet, MetaTieredImageNet
 from dataset.cifar import CIFAR100, MetaCIFAR100
+from dataset.cub import CUB2011, MetaCUB2011
 from dataset.transform_cfg import transforms_options, transforms_list
 
 from util import adjust_learning_rate, accuracy, AverageMeter
 from eval.meta_eval import meta_test
 from eval.cls_eval import validate
+
+import wandb
 
 
 def parse_option():
@@ -44,12 +47,12 @@ def parse_option():
     parser.add_argument('--lr_decay_rate', type=float, default=0.1, help='decay rate for learning rate')
     parser.add_argument('--weight_decay', type=float, default=5e-4, help='weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
-    parser.add_argument('--adam', action='store_true', help='use adam optimizer')
+    parser.add_argument('--adam', action='store_true', help='use adam dataset')
 
-    # dataset
+    # optimizer
     parser.add_argument('--model', type=str, default='resnet12', choices=model_pool)
     parser.add_argument('--dataset', type=str, default='miniImageNet', choices=['miniImageNet', 'tieredImageNet',
-                                                                                'CIFAR-FS', 'FC100'])
+                                                                                'CIFAR-FS', 'FC100', 'CUB'])
     parser.add_argument('--transform', type=str, default='A', choices=transforms_list)
     parser.add_argument('--use_trainval', action='store_true', help='use trainval set')
 
@@ -77,10 +80,23 @@ def parse_option():
 
     parser.add_argument('-t', '--trial', type=str, default='1', help='the experiment id')
 
+    # wandb logging
+    parser.add_argument('--dryrun',      action='store_true',
+                        help='Use flag to prevent logging to wandb')
+
     opt = parser.parse_args()
+
+    if opt.dryrun:
+        os.environ['WANDB_MODE'] = 'dryrun'
+    else:
+        os.environ['WANDB_MODE'] = 'run'
+
 
     if opt.dataset == 'CIFAR-FS' or opt.dataset == 'FC100':
         opt.transform = 'D'
+
+    if opt.dataset == 'CUB':
+        opt.dataset = 'CUB_200_2011'
 
     if opt.use_trainval:
         opt.trial = opt.trial + '_trainval'
@@ -91,9 +107,9 @@ def parse_option():
     if not opt.tb_path:
         opt.tb_path = './tensorboard'
     if not opt.data_root:
-        opt.data_root = './data/{}'.format(opt.dataset)
+        opt.data_root = os.path.join('./data', opt.dataset)
     else:
-        opt.data_root = '{}/{}'.format(opt.data_root, opt.dataset)
+        opt.data_root = os.path.join(opt.data_root, opt.dataset)
     opt.data_aug = True
 
     iterations = opt.lr_decay_epochs.split(',')
@@ -128,6 +144,9 @@ def parse_option():
 def main():
 
     opt = parse_option()
+
+    wandb.init()
+    wandb.config.update(opt)
 
     # dataloader
     train_partition = 'trainval' if opt.use_trainval else 'train'
@@ -203,8 +222,34 @@ def main():
                 n_cls = 60
             else:
                 raise NotImplementedError('dataset not supported: {}'.format(opt.dataset))
+    elif opt.dataset == 'CUB_200_2011':
+        train_trans, test_trans = transforms_options['C']
+
+        train_loader = DataLoader(CUB2011(args=opt, partition=train_partition, transform=train_trans),
+                                  batch_size=opt.batch_size, shuffle=True, drop_last=True,
+                                  num_workers=opt.num_workers)
+        val_loader = DataLoader(CUB2011(args=opt, partition='val', transform=test_trans),
+                                batch_size=opt.batch_size // 2, shuffle=False, drop_last=False,
+                                num_workers=opt.num_workers // 2)
+        meta_testloader = DataLoader(MetaCUB2011(args=opt, partition='test',
+                                                  train_transform=train_trans,
+                                                  test_transform=test_trans),
+                                     batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
+                                     num_workers=opt.num_workers)
+        meta_valloader = DataLoader(MetaCUB2011(args=opt, partition='val',
+                                                 train_transform=train_trans,
+                                                 test_transform=test_trans),
+                                    batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
+                                    num_workers=opt.num_workers)
+        if opt.use_trainval:
+            raise NotImplementedError(opt.dataset) # no trainval supported yet
+            n_cls = 150
+        else:
+            n_cls = 100
     else:
         raise NotImplementedError(opt.dataset)
+
+    print('Amount training data: {}'.format(len(train_loader.dataset)))
 
     # model
     model = create_model(opt.model, n_cls, opt.dataset)
@@ -230,7 +275,7 @@ def main():
         cudnn.benchmark = True
 
     # tensorboard
-    logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
+    #logger = tb_logger.Logger(logdir=opt.tb_folder, flush_secs=2)
 
     # set cosine annealing scheduler
     if opt.cosine:
@@ -238,6 +283,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, opt.epochs, eta_min, -1)
 
     # routine: supervised pre-training
+    best_val_acc = 0
     for epoch in range(1, opt.epochs + 1):
 
         if opt.cosine:
@@ -251,14 +297,23 @@ def main():
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        logger.log_value('train_acc', train_acc, epoch)
-        logger.log_value('train_loss', train_loss, epoch)
+        #logger.log_value('train_acc', train_acc, epoch)
+        #logger.log_value('train_loss', train_loss, epoch)
 
         test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, opt)
 
-        logger.log_value('test_acc', test_acc, epoch)
-        logger.log_value('test_acc_top5', test_acc_top5, epoch)
-        logger.log_value('test_loss', test_loss, epoch)
+        #logger.log_value('test_acc', test_acc, epoch)
+        #logger.log_value('test_acc_top5', test_acc_top5, epoch)
+        #logger.log_value('test_loss', test_loss, epoch)
+
+        # wandb
+        wandb.log({
+            'train_acc':     train_acc,
+            'train_loss':    train_loss,
+            'test_acc':      test_acc,
+            'test_acc_top5': test_acc_top5,
+            'test_loss':     test_loss
+        }, step=epoch)
 
         # regular saving
         if epoch % opt.save_freq == 0:
@@ -269,6 +324,11 @@ def main():
             }
             save_file = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
             torch.save(state, save_file)
+
+
+        if test_acc > best_val_acc:
+            wandb.run.summary['best_val_acc'] = test_acc
+            wandb.run.summary['best_val_acc_epoch'] = epoch
 
     # save the last model
     state = {

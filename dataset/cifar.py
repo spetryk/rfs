@@ -89,6 +89,7 @@ class CIFAR100(Dataset):
             self.cls_positive = np.asarray(self.cls_positive)
             self.cls_negative = np.asarray(self.cls_negative)
 
+
     def __getitem__(self, item):
         img = np.asarray(self.imgs[item]).astype('uint8')
         img = self.transform(img)
@@ -193,7 +194,7 @@ if __name__ == '__main__':
     args.n_shots = 1
     args.n_queries = 12
     # args.data_root = 'data'
-    args.data_root = '/home/yonglong/Downloads/FC100'
+    args.data_root = '/shared/spetryk/data/rfs/CIFAR-FS'
     args.data_aug = True
     args.n_test_runs = 5
     args.n_aug_support_samples = 1
