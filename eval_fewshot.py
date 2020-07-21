@@ -53,6 +53,7 @@ def parse_option():
     parser.add_argument('--test_batch_size', type=int, default=1, metavar='test_batch_size',
                         help='Size of test batch)')
 
+
     opt = parser.parse_args()
 
     if 'trainval' in opt.model_path:
@@ -63,6 +64,8 @@ def parse_option():
     if opt.dataset == 'CUB':
         opt.dataset = 'CUB_200_2011'
 
+    opt.lsl = None
+    opt.lang_dir = None
 
     # set the path according to the environment
     if not opt.data_root:
@@ -142,7 +145,7 @@ def main():
                 raise NotImplementedError('dataset not supported: {}'.format(opt.dataset))
     elif opt.dataset == 'CUB_200_2011':
         train_trans, test_trans = transforms_test_options['C']
-        meta_testloader = DataLoader(MetaCUB2011(args=opt, partition='test',
+        meta_testloader = DataLoader(MetaCUB2011(args=opt, partition='test_100',
                                                         train_transform=train_trans,
                                                         test_transform=test_trans,
                                                         fix_seed=False),
@@ -176,25 +179,27 @@ def main():
         cudnn.benchmark = True
 
     # evalation
-    start = time.time()
-    val_acc, val_std = meta_test(model, meta_valloader)
-    val_time = time.time() - start
-    print('val_acc: {:.4f}, val_std: {:.4f}, time: {:.1f}'.format(val_acc, val_std, val_time))
+    # start = time.time()
+    # val_acc, val_std, _, _ = meta_test(model, meta_valloader)
+    # val_time = time.time() - start
+    # print('val_acc: {:.4f}, val_std: {:.4f}, time: {:.1f}'.format(val_acc, val_std, val_time))
+
+    # start = time.time()
+    # val_acc_feat, val_std_feat, _, _ = meta_test(model, meta_valloader, use_logit=False)
+    # val_time = time.time() - start
+    # print('val_acc_feat: {:.4f}, val_std: {:.4f}, time: {:.1f}'.format(val_acc_feat, val_std_feat, val_time))
 
     start = time.time()
-    val_acc_feat, val_std_feat = meta_test(model, meta_valloader, use_logit=False)
-    val_time = time.time() - start
-    print('val_acc_feat: {:.4f}, val_std: {:.4f}, time: {:.1f}'.format(val_acc_feat, val_std_feat, val_time))
-
-    start = time.time()
-    test_acc, test_std = meta_test(model, meta_testloader)
+    test_acc, test_std, test_acc5, test_std5 = meta_test(model, meta_testloader)
     test_time = time.time() - start
     print('test_acc: {:.4f}, test_std: {:.4f}, time: {:.1f}'.format(test_acc, test_std, test_time))
+    print('test_acc top 5: {:.4f}, test_std top 5: {:.4f}, time: {:.1f}'.format(test_acc5, test_std5, test_time))
 
     start = time.time()
-    test_acc_feat, test_std_feat = meta_test(model, meta_testloader, use_logit=False)
+    test_acc_feat, test_std_feat, test_acc5, test_std5  = meta_test(model, meta_testloader, use_logit=False)
     test_time = time.time() - start
     print('test_acc_feat: {:.4f}, test_std: {:.4f}, time: {:.1f}'.format(test_acc_feat, test_std_feat, test_time))
+    print('test_acc_feat top 5: {:.4f}, test_std top 5: {:.4f}, time: {:.1f}'.format(test_acc_feat5, test_std_feat5, test_time))
 
 
 if __name__ == '__main__':

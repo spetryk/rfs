@@ -156,6 +156,8 @@ class SetDataset:
                 for i, img_fname in enumerate(sorted_imgs):
                     self.image_name_idx[img_fname] = i
 
+        breakpoint()
+
         for x, y in zip(self.meta["image_names"], self.meta["image_labels"]):
             if y in self.sub_meta:
                 self.sub_meta[y].append(x)

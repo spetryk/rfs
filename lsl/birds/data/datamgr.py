@@ -136,7 +136,7 @@ class SetDataManager(DataManager):
 
         dataset = SetDataset(
             self.name,
-            data_file,
+            data_file, # json file (e.g. path to base.json)
             self.batch_size,
             transform,
             args=self.args,

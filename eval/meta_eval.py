@@ -12,6 +12,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 
+from util import accuracy
+
 
 def mean_confidence_interval(data, confidence=0.95):
     a = 1.0 * np.array(data)
@@ -30,6 +32,7 @@ def normalize(x):
 def meta_test(net, testloader, use_logit=True, is_norm=True, classifier='LR'):
     net = net.eval()
     acc = []
+    acc5 = []
 
     with torch.no_grad():
         for idx, data in tqdm(enumerate(testloader)):
@@ -71,9 +74,13 @@ def meta_test(net, testloader, use_logit=True, is_norm=True, classifier='LR'):
             else:
                 raise NotImplementedError('classifier not supported: {}'.format(classifier))
 
-            acc.append(metrics.accuracy_score(query_ys, query_ys_pred))
+            probs = clf.predict_proba(query_features)
+            acc_top1, acc_top5 = accuracy(torch.Tensor(probs), torch.Tensor(query_ys), topk=(1, 5))
 
-    return mean_confidence_interval(acc)
+            acc.append(metrics.accuracy_score(query_ys, query_ys_pred))
+            acc5.append(acc_top5)
+
+    return mean_confidence_interval(acc), mean_confidence_interval(acc5)
 
 
 def NN(support, support_ys, query):

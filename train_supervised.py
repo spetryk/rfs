@@ -12,6 +12,7 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 from models import model_pool
 from models.util import create_model
@@ -22,7 +23,7 @@ from dataset.cifar import CIFAR100, MetaCIFAR100
 from dataset.cub import CUB2011, MetaCUB2011
 from dataset.transform_cfg import transforms_options, transforms_list
 
-from util import adjust_learning_rate, accuracy, AverageMeter
+from util import adjust_learning_rate, accuracy, AverageMeter, compute_lang_loss
 from eval.meta_eval import meta_test
 from eval.cls_eval import validate
 
@@ -98,9 +99,11 @@ def parse_option():
         "--lang_supervision", default="instance", choices=["instance", "class"]
     )
     parser.add_argument("--glove_init", action="store_true")
-    parser.add_argument("--freeze_emb", action="store_true")
+    parser.add_argument("--freeze_emb", action="store_true",
+                        help='Freeze LM word embedding layer')
     parser.add_argument("--scramble_lang", action="store_true")
-    parser.add_argument("--sample_class_lang", action="store_true")
+    parser.add_argument("--sample_class_lang", action="store_true",
+                        help='Sample language randomly from class, rather than getting lang assoc. w/ img')
     parser.add_argument("--scramble_all", action="store_true")
     parser.add_argument("--shuffle_lang", action="store_true")
     parser.add_argument("--scramble_lang_class", action="store_true")
@@ -113,6 +116,8 @@ def parse_option():
     parser.add_argument("--lang_hidden_size", type=int, default=200)
     parser.add_argument("--rnn_lr_scale", default=1.0, type=float)
     parser.add_argument("--lang_dir", default='./lsl/birds/reed-birds', type=str)
+    parser.add_argument('--use_logit', action='store_true',
+                        help='use logit layer for input to lang model. otherwise, uses pre-classification feature vector')
 
     # wandb logging
     parser.add_argument('--dryrun',      action='store_true',
@@ -259,20 +264,23 @@ def main():
     elif opt.dataset == 'CUB_200_2011':
         train_trans, test_trans = transforms_options['C']
 
-        train_loader = DataLoader(CUB2011(args=opt, partition=train_partition, transform=train_trans),
+        vocab = lang_utils.load_vocab(opt.lang_dir) if opt.lsl else None
+
+        train_loader = DataLoader(CUB2011(args=opt, partition=train_partition, transform=train_trans,
+                                          vocab=vocab),
                                   batch_size=opt.batch_size, shuffle=True, drop_last=True,
                                   num_workers=opt.num_workers)
-        val_loader = DataLoader(CUB2011(args=opt, partition='val', transform=test_trans),
+        val_loader = DataLoader(CUB2011(args=opt, partition='val', transform=test_trans, vocab=vocab),
                                 batch_size=opt.batch_size // 2, shuffle=False, drop_last=False,
                                 num_workers=opt.num_workers // 2)
         meta_testloader = DataLoader(MetaCUB2011(args=opt, partition='test',
                                                   train_transform=train_trans,
-                                                  test_transform=test_trans),
+                                                  test_transform=test_trans, vocab=vocab),
                                      batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
                                      num_workers=opt.num_workers)
         meta_valloader = DataLoader(MetaCUB2011(args=opt, partition='val',
                                                  train_transform=train_trans,
-                                                 test_transform=test_trans),
+                                                 test_transform=test_trans, vocab=vocab),
                                     batch_size=opt.test_batch_size, shuffle=False, drop_last=False,
                                     num_workers=opt.num_workers)
         if opt.use_trainval:
@@ -304,9 +312,6 @@ def main():
 
 
     # lsl
-    # load language
-    vocab = lang_utils.load_vocab(opt.lang_dir)
-
     lang_model = None
     if opt.lsl:
         if opt.glove_init:
@@ -317,7 +322,7 @@ def main():
         if opt.freeze_emb:
             embedding_model.weight.requires_grad = False
 
-        lang_input_size = 1600 # may need to change this
+        lang_input_size = n_cls if opt.use_logit else 640 # 640 for resnet12
         lang_model = TextProposal(
             embedding_model,
             input_size=lang_input_size,
@@ -329,7 +334,6 @@ def main():
             vocab=vocab,
             **lang_utils.get_special_indices(vocab)
         )
-
 
 
     if torch.cuda.is_available():
@@ -361,30 +365,39 @@ def main():
         print("==> training...")
 
         time1 = time.time()
-        train_acc, train_loss = train(epoch, train_loader, model, criterion, optimizer, opt)
+        train_acc, train_loss, train_lang_loss = train(
+            epoch, train_loader, model, criterion, optimizer, opt, lang_model
+        )
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
         #logger.log_value('train_acc', train_acc, epoch)
         #logger.log_value('train_loss', train_loss, epoch)
 
-        test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, opt)
+        print("==> validating...")
+        test_acc, test_acc_top5, test_loss, test_lang_loss = validate(
+            val_loader, model, criterion, opt, lang_model
+        )
 
         #logger.log_value('test_acc', test_acc, epoch)
         #logger.log_value('test_acc_top5', test_acc_top5, epoch)
         #logger.log_value('test_loss', test_loss, epoch)
 
         # wandb
-        wandb.log({
+        log_metrics = {
             'train_acc':     train_acc,
             'train_loss':    train_loss,
             'test_acc':      test_acc,
             'test_acc_top5': test_acc_top5,
             'test_loss':     test_loss
-        }, step=epoch)
+        }
+        if opt.lsl:
+            log_metrics['train_lang_loss'] = train_lang_loss
+            log_metrics['test_lang_loss']  = test_lang_loss
+        wandb.log(log_metrics, step=epoch)
 
         # regular saving
-        if epoch % opt.save_freq == 0:
+        if epoch % opt.save_freq == 0 and not opt.dryrun:
             print('==> Saving...')
             state = {
                 'epoch': epoch,
@@ -407,7 +420,9 @@ def main():
     torch.save(state, save_file)
 
 
-def train(epoch, train_loader, model, criterion, optimizer, opt):
+
+
+def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model):
     """One epoch training"""
     model.train()
 
@@ -416,29 +431,56 @@ def train(epoch, train_loader, model, criterion, optimizer, opt):
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
+    lang_losses = AverageMeter()
 
     end = time.time()
-    for idx, (input, target, _) in enumerate(train_loader):
+    for idx, data in enumerate(train_loader):
+
+        if opt.lsl:
+            (input, target, _, (lang, lang_length, lang_mask)) = data
+            # Trim padding to max length in batch
+            max_lang_length = lang_length.max()
+            lang = lang[:, :max_lang_length]
+            lang_mask = lang_mask[:, :max_lang_length]
+        else:
+            (input, target, _) = data
+
+        # lang shape:        [batch_size, 32]
+        # lang_length shape: [batch_size]
+        # lang_mask shape:   [batch_size, 32]
+
         data_time.update(time.time() - end)
 
         input = input.float()
         if torch.cuda.is_available():
-            input = input.cuda()
+            input  = input.cuda()
             target = target.cuda()
+            if opt.lsl:
+                lang = lang.cuda()
+                lang_length = lang_length.cuda()
+                lang_mask   = lang_mask.cuda()
 
         # ===================forward=====================
-        output = model(input)
+        if opt.use_logit:
+            output = model(input)
+            features = output
+        else:
+            features, output = model(input, is_feat=True)
+            features = features[-1]
         loss = criterion(output, target)
 
         # add language loss
         if opt.lsl:
-            # TODO
-            pass
+            lang_loss = compute_lang_loss(features, lang, lang_length, lang_mask, lang_model)
+            lang_loss = opt.lang_lambda * lang_loss
+            loss = lang_loss + loss
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), input.size(0))
         top1.update(acc1[0], input.size(0))
         top5.update(acc5[0], input.size(0))
+        if opt.lsl:
+            lang_losses.update(lang_loss.item(), input.size(0))
 
         # ===================backward=====================
         optimizer.zero_grad()
@@ -459,15 +501,18 @@ def train(epoch, train_loader, model, criterion, optimizer, opt):
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   epoch, idx, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=losses, top1=top1, top5=top5))
+                  'Acc@5 {top5.val:.3f} ({top5.avg:.3f})\t'
+                  '{lang}'.format(
+                      epoch, idx, len(train_loader), batch_time=batch_time,
+                      data_time=data_time, loss=losses, top1=top1, top5=top5,
+                      lang='Lang Loss {lang_losses.val:.4f} {lang_losses.avg:.4f}'.format(lang_losses=lang_losses)
+                          if opt.lsl else None))
             sys.stdout.flush()
 
     print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
           .format(top1=top1, top5=top5))
 
-    return top1.avg, losses.avg
+    return top1.avg, losses.avg, lang_losses.avg if opt.lsl else None
 
 
 if __name__ == '__main__':
