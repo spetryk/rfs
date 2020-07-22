@@ -65,8 +65,8 @@ def parse_option():
     parser.add_argument('--cosine', action='store_true', help='using cosine annealing')
 
     # specify folder
-    parser.add_argument('--model_path', type=str, default='', help='path to save model')
-    parser.add_argument('--tb_path', type=str, default='', help='path to tensorboard')
+    #parser.add_argument('--model_path', type=str, default='', help='path to save model')
+    #parser.add_argument('--tb_path', type=str, default='', help='path to tensorboard')
     parser.add_argument('--data_root', type=str, default='', help='path to data root')
 
     # meta setting
@@ -83,7 +83,7 @@ def parse_option():
     parser.add_argument('--test_batch_size', type=int, default=1, metavar='test_batch_size',
                         help='Size of test batch)')
 
-    parser.add_argument('-t', '--trial', type=str, default='1', help='the experiment id')
+    #parser.add_argument('-t', '--trial', type=str, default='1', help='the experiment id')
 
     # *** LSL params
     parser.add_argument("--lsl", action="store_true",
@@ -122,6 +122,8 @@ def parse_option():
     # wandb logging
     parser.add_argument('--dryrun',      action='store_true',
                         help='Use flag to prevent logging to wandb')
+    parser.add_argument('--name', type=str, default=None,
+                        help='name for wandb run')
 
     opt = parser.parse_args()
 
@@ -129,6 +131,9 @@ def parse_option():
         os.environ['WANDB_MODE'] = 'dryrun'
     else:
         os.environ['WANDB_MODE'] = 'run'
+
+    if opt.name is not None:
+        os.environ['WANDB_RUN_ID'] = opt.name
 
 
     if opt.dataset == 'CIFAR-FS' or opt.dataset == 'FC100':
@@ -141,10 +146,6 @@ def parse_option():
         opt.trial = opt.trial + '_trainval'
 
     # set the path according to the environment
-    if not opt.model_path:
-        opt.model_path = './models_pretrained'
-    if not opt.tb_path:
-        opt.tb_path = './tensorboard'
     if not opt.data_root:
         opt.data_root = os.path.join('./data', opt.dataset)
     else:
@@ -156,24 +157,11 @@ def parse_option():
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_lr_{}_decay_{}_trans_{}'.format(opt.model, opt.dataset, opt.learning_rate,
-                                                            opt.weight_decay, opt.transform)
-
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
 
     if opt.adam:
         opt.model_name = '{}_useAdam'.format(opt.model_name)
-
-    opt.model_name = '{}_trial_{}'.format(opt.model_name, opt.trial)
-
-    opt.tb_folder = os.path.join(opt.tb_path, opt.model_name)
-    if not os.path.isdir(opt.tb_folder):
-        os.makedirs(opt.tb_folder)
-
-    opt.save_folder = os.path.join(opt.model_path, opt.model_name)
-    if not os.path.isdir(opt.save_folder):
-        os.makedirs(opt.save_folder)
 
     opt.n_gpu = torch.cuda.device_count()
 
@@ -184,7 +172,10 @@ def main():
 
     opt = parse_option()
 
-    wandb.init()
+    if opt.name is not None:
+        wandb.init(name=opt.name)
+    else:
+        wandb.init()
     wandb.config.update(opt)
 
     # dataloader
@@ -265,7 +256,7 @@ def main():
         train_trans, test_trans = transforms_options['C']
 
         vocab = lang_utils.load_vocab(opt.lang_dir) if opt.lsl else None
-        devocab = {v:k for k,v in vocab.items()}
+        devocab = {v:k for k,v in vocab.items()} if opt.lsl else None
 
         train_loader = DataLoader(CUB2011(args=opt, partition=train_partition, transform=train_trans,
                                           vocab=vocab),
@@ -373,40 +364,34 @@ def main():
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        #logger.log_value('train_acc', train_acc, epoch)
-        #logger.log_value('train_loss', train_loss, epoch)
 
         print("==> validating...")
         test_acc, test_acc_top5, test_loss, test_lang_loss = validate(
             val_loader, model, criterion, opt, lang_model
         )
 
-        #logger.log_value('test_acc', test_acc, epoch)
-        #logger.log_value('test_acc_top5', test_acc_top5, epoch)
-        #logger.log_value('test_loss', test_loss, epoch)
-
         # wandb
         log_metrics = {
             'train_acc':     train_acc,
             'train_loss':    train_loss,
-            'test_acc':      test_acc,
-            'test_acc_top5': test_acc_top5,
-            'test_loss':     test_loss
+            'val_acc':      test_acc,
+            'val_acc_top5': test_acc_top5,
+            'val_loss':     test_loss
         }
         if opt.lsl:
             log_metrics['train_lang_loss'] = train_lang_loss
-            log_metrics['test_lang_loss']  = test_lang_loss
+            log_metrics['val_lang_loss']  = test_lang_loss
         wandb.log(log_metrics, step=epoch)
 
-        # regular saving
-        if epoch % opt.save_freq == 0 and not opt.dryrun:
-            print('==> Saving...')
-            state = {
-                'epoch': epoch,
-                'model': model.state_dict() if opt.n_gpu <= 1 else model.module.state_dict(),
-            }
-            save_file = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
-            torch.save(state, save_file)
+        # # regular saving
+        # if epoch % opt.save_freq == 0 and not opt.dryrun:
+        #     print('==> Saving...')
+        #     state = {
+        #         'epoch': epoch,
+        #         'model': model.state_dict() if opt.n_gpu <= 1 else model.module.state_dict(),
+        #     }
+        #     save_file = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
+        #     torch.save(state, save_file)
 
 
         if test_acc > best_val_acc:
@@ -418,10 +403,36 @@ def main():
         'opt': opt,
         'model': model.state_dict() if opt.n_gpu <= 1 else model.module.state_dict(),
     }
-    save_file = os.path.join(opt.save_folder, '{}_last.pth'.format(opt.model))
+    save_file = os.path.join(wandb.run.dir, '{}_last.pth'.format(opt.model))
     torch.save(state, save_file)
 
+    # evaluate on test set
+    print("==> testing...")
+    start = time.time()
+    (test_acc, test_std), (test_acc5, test_std5) = meta_test(model, meta_testloader)
+    test_time = time.time() - start
+    print('Using logit layer for embedding')
+    print('test_acc: {:.4f}, test_std: {:.4f}, time: {:.1f}'.format(test_acc, test_std, test_time))
+    print('test_acc top 5: {:.4f}, test_std top 5: {:.4f}, time: {:.1f}'.format(test_acc5, test_std5, test_time))
 
+    start = time.time()
+    (test_acc_feat, test_std_feat), (test_acc5_feat, test_std5_feat)  = meta_test(model, meta_testloader,
+                                                                              use_logit=False)
+    test_time = time.time() - start
+    print('Using layer before logits for embedding')
+    print('test_acc_feat: {:.4f}, test_std: {:.4f}, time: {:.1f}'.format(
+        test_acc_feat, test_std_feat, test_time))
+    print('test_acc_feat top 5: {:.4f}, test_std top 5: {:.4f}, time: {:.1f}'.format(
+        test_acc5_feat, test_std5_feat, test_time))
+
+    wandb.run.summary['test_acc'] = test_acc
+    wandb.run.summary['test_std'] = test_std
+    wandb.run.summary['test_acc5'] = test_acc5
+    wandb.run.summary['test_std5'] = test_std5
+    wandb.run.summary['test_acc_feat'] = test_acc_feat
+    wandb.run.summary['test_std_feat'] = test_std_feat
+    wandb.run.summary['test_acc5_feat'] = test_acc5_feat
+    wandb.run.summary['test_std5_feat'] = test_std5_feat
 
 
 def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model, devocab=None):
@@ -445,17 +456,16 @@ def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model, dev
             lang = lang[:, :max_lang_length]
             lang_mask = lang_mask[:, :max_lang_length]
 
-            if not False:
-                images = [(unnormalize_cub(im).cpu().numpy() * 255).astype(int).transpose(1,2,0) for im in input]
-                decoded = []
-                for cap, length in zip(lang, lang_length):
-                    decoded.append(' '.join([devocab[int(i)] for i in cap[:length]]))
-                wandb.log(
-                    {'samples': [wandb.Image(images[i], caption=decoded[i])
-                                 for i in range(min(10, len(decoded)))]
-                    }, step=epoch
-                )
-                print('saved')
+            # images = [(unnormalize_cub(im).cpu().numpy() * 255).astype(int).transpose(1,2,0) for im in input]
+            # decoded = []
+            # for cap, length in zip(lang, lang_length):
+            #     decoded.append(' '.join([devocab[int(i)] for i in cap[:length]]))
+            # wandb.log(
+            #     {'samples': [wandb.Image(images[i], caption=decoded[i])
+            #                  for i in range(min(10, len(decoded)))]
+            #     }, step=epoch
+            # )
+            # print('saved')
 
         else:
             (input, target, _) = data
@@ -463,8 +473,6 @@ def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model, dev
         # lang shape:        [batch_size, 32]
         # lang_length shape: [batch_size]
         # lang_mask shape:   [batch_size, 32]
-
-
 
         data_time.update(time.time() - end)
 
@@ -507,9 +515,6 @@ def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model, dev
         # ===================meters=====================
         batch_time.update(time.time() - end)
         end = time.time()
-
-        # tensorboard logger
-        pass
 
         # print info
         if idx % opt.print_freq == 0:

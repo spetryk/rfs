@@ -77,7 +77,8 @@ def meta_test(net, testloader, use_logit=True, is_norm=True, classifier='LR'):
             probs = clf.predict_proba(query_features)
             acc_top1, acc_top5 = accuracy(torch.Tensor(probs), torch.Tensor(query_ys), topk=(1, 5))
 
-            acc.append(metrics.accuracy_score(query_ys, query_ys_pred))
+            #acc.append(metrics.accuracy_score(query_ys, query_ys_pred)a)
+            acc.append(acc_top1)
             acc5.append(acc_top5)
 
     return mean_confidence_interval(acc), mean_confidence_interval(acc5)

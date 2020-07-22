@@ -83,7 +83,7 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
-
+    
 
 def compute_lang_loss(features, lang, lang_length, lang_mask, lang_model):
     hyp_batch_size = features.shape[0]
