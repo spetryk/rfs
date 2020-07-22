@@ -21,7 +21,7 @@ from dataset.mini_imagenet import ImageNet, MetaImageNet
 from dataset.tiered_imagenet import TieredImageNet, MetaTieredImageNet
 from dataset.cifar import CIFAR100, MetaCIFAR100
 from dataset.cub import CUB2011, MetaCUB2011
-from dataset.transform_cfg import transforms_options, transforms_list
+from dataset.transform_cfg import transforms_options, transforms_list, unnormalize_cub
 
 from util import adjust_learning_rate, accuracy, AverageMeter, compute_lang_loss
 from eval.meta_eval import meta_test
@@ -265,6 +265,7 @@ def main():
         train_trans, test_trans = transforms_options['C']
 
         vocab = lang_utils.load_vocab(opt.lang_dir) if opt.lsl else None
+        devocab = {v:k for k,v in vocab.items()}
 
         train_loader = DataLoader(CUB2011(args=opt, partition=train_partition, transform=train_trans,
                                           vocab=vocab),
@@ -366,7 +367,8 @@ def main():
 
         time1 = time.time()
         train_acc, train_loss, train_lang_loss = train(
-            epoch, train_loader, model, criterion, optimizer, opt, lang_model
+            epoch, train_loader, model, criterion, optimizer, opt, lang_model,
+            devocab=devocab if opt.lsl else None
         )
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
@@ -422,7 +424,7 @@ def main():
 
 
 
-def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model):
+def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model, devocab=None):
     """One epoch training"""
     model.train()
 
@@ -442,12 +444,27 @@ def train(epoch, train_loader, model, criterion, optimizer, opt, lang_model):
             max_lang_length = lang_length.max()
             lang = lang[:, :max_lang_length]
             lang_mask = lang_mask[:, :max_lang_length]
+
+            if not False:
+                images = [(unnormalize_cub(im).cpu().numpy() * 255).astype(int).transpose(1,2,0) for im in input]
+                decoded = []
+                for cap, length in zip(lang, lang_length):
+                    decoded.append(' '.join([devocab[int(i)] for i in cap[:length]]))
+                wandb.log(
+                    {'samples': [wandb.Image(images[i], caption=decoded[i])
+                                 for i in range(min(10, len(decoded)))]
+                    }, step=epoch
+                )
+                print('saved')
+
         else:
             (input, target, _) = data
 
         # lang shape:        [batch_size, 32]
         # lang_length shape: [batch_size]
         # lang_mask shape:   [batch_size, 32]
+
+
 
         data_time.update(time.time() - end)
 

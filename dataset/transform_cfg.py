@@ -10,6 +10,12 @@ std = [70.68188272 / 255.0, 68.27635443 / 255.0, 72.54505529 / 255.0]
 normalize = transforms.Normalize(mean=mean, std=std)
 
 
+def unnormalize_transform(mean, std):
+    unmean = -np.array(mean) / np.array(std)
+    unstd  = 1. / np.array(std)
+    return transforms.Normalize(unmean, unstd)
+
+
 transform_A = [
     transforms.Compose([
         lambda x: Image.fromarray(x),
@@ -50,6 +56,8 @@ transform_A_test = [
 mean = [0.4856074, 0.4994159, 0.4323767]
 std  =  [0.1817421, 0.1811020, 0.1927458]
 normalize_cub = transforms.Normalize(mean=mean, std=std)
+unnormalize_cub = unnormalize_transform(mean, std)
+
 
 transform_C = [
     transforms.Compose([
